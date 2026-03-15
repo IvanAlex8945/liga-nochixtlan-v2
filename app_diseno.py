@@ -2321,6 +2321,328 @@ def _section_capture() -> None:
                     st.rerun()
                 except Exception as exc:
                     st.error(f"🔴 Error al actualizar el partido: `{exc}`")
+# ================================================================
+# GENERADOR DE PDF — ELEGIBILIDAD PARA LIGUILLA
+# ================================================================
+
+def _calc_elegibilidad_categoria(db, season_id: int) -> list:
+    """
+    Calcula la elegibilidad de TODOS los equipos de una categoría.
+    Devuelve lista de dicts con estructura:
+      { "equipo": str, "total_partidos": int, "min_requerido": int,
+        "jugadores": [ {"Jugador", "Asistencias", "Mínimo", "Estatus"} ] }
+    """
+    from sqlalchemy import func as _func
+
+    equipos = (
+        db.query(Team)
+        .filter(Team.season_id == season_id, Team.status == "Activo")
+        .order_by(Team.name)
+        .all()
+    )
+
+    resultado = []
+    for equipo in equipos:
+        total_partidos = (
+            db.query(_func.count(Match.id))
+            .filter(
+                Match.season_id == season_id,
+                Match.status.in_(["Jugado", "WO Local",
+                                   "WO Visitante", "WO Doble"]),
+                (Match.home_team_id == equipo.id) |
+                (Match.away_team_id == equipo.id),
+            )
+            .scalar()
+        ) or 0
+
+        min_requerido = (total_partidos // 2) + 1
+
+        jugadores_db = (
+            db.query(Player)
+            .filter(Player.team_id == equipo.id, Player.is_active == True)
+            .order_by(Player.name)
+            .all()
+        )
+
+        filas = []
+        for p in jugadores_db:
+            asistencias = (
+                db.query(_func.count(PlayerMatchStat.id))
+                .join(Match, Match.id == PlayerMatchStat.match_id)
+                .filter(
+                    PlayerMatchStat.player_id == p.id,
+                    PlayerMatchStat.team_id == equipo.id,
+                    Match.season_id == season_id,
+                    PlayerMatchStat.played == True,
+                )
+                .scalar()
+            ) or 0
+            elegible = (asistencias >= min_requerido) and (total_partidos > 0)
+            filas.append({
+                "Jugador":     p.name,
+                "Asistencias": asistencias,
+                "Mínimo":      min_requerido,
+                "Estatus":     "ELEGIBLE" if elegible else "NO ELEGIBLE",
+            })
+
+        resultado.append({
+            "equipo":          equipo.name,
+            "total_partidos":  total_partidos,
+            "min_requerido":   min_requerido,
+            "jugadores":       filas,
+        })
+
+    return resultado
+
+
+def _fecha_es(dt=None) -> str:
+    """Fecha en español puro sin depender del locale del servidor."""
+    from datetime import datetime as _dt
+    if dt is None:
+        dt = _dt.now()
+    meses = {
+        1: "enero",    2: "febrero", 3: "marzo",     4: "abril",
+        5: "mayo",     6: "junio",   7: "julio",      8: "agosto",
+        9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+    }
+    return f"{dt.day} de {meses[dt.month]} de {dt.year}"
+
+
+def _generar_pdf_general_elegibilidad(
+    categoria: str,
+    temporada_nombre: str,
+    equipos_data: list,   # salida de _calc_elegibilidad_categoria
+) -> bytes:
+    """
+    Reporte General de Elegibilidad para toda la categoria.
+    - Encabezado global + bloque por equipo
+    - Pie de pagina con numeracion "Pagina X de Y" en espanol
+    - Fecha 100% en espanol via diccionario manual
+    - Firmas y sello al final
+    """
+    from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table,
+        TableStyle, HRFlowable, KeepTogether,
+    )
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.pdfgen import canvas as _canvas_mod
+
+    # ── Fecha 100% espanol ────────────────────────────────────────
+    fecha_str = _fecha_es()   # ej. "15 de marzo de 2026"
+
+    # ── Numeracion "Pagina X de Y" ────────────────────────────────
+    # Se usa una subclase de Canvas para conocer el total al imprimir.
+    class _PageNumCanvas(_canvas_mod.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_page_states = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                self._draw_footer(total)
+                super().showPage()
+            super().save()
+
+        def _draw_footer(self, total_pages: int):
+            self.saveState()
+            self.setFont("Helvetica", 7)
+            self.setFillColor(colors.grey)
+            self.drawCentredString(
+                letter[0] / 2, 1.2 * cm,
+                f"Pagina {self.getPageNumber()} de {total_pages}  |  "
+                f"Liga Municipal de Basquetbol de Nochixtlan  |  {fecha_str}"
+            )
+            self.restoreState()
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=2*cm, rightMargin=2*cm,
+        topMargin=2*cm,  bottomMargin=2.5*cm,
+    )
+
+    styles = getSampleStyleSheet()
+
+    # ── Estilos ───────────────────────────────────────────────────
+    s_title = ParagraphStyle(
+        "GT", parent=styles["Heading1"],
+        fontSize=13, leading=16, alignment=TA_CENTER,
+        textColor=colors.black, fontName="Helvetica-Bold", spaceAfter=3,
+    )
+    s_info = ParagraphStyle(
+        "GI", parent=styles["Normal"],
+        fontSize=9, textColor=colors.black,
+        fontName="Helvetica", spaceAfter=2,
+    )
+    s_team_header = ParagraphStyle(
+        "GTH", parent=styles["Heading2"],
+        fontSize=11, textColor=colors.black,
+        fontName="Helvetica-Bold", spaceBefore=10, spaceAfter=3,
+    )
+    s_summary = ParagraphStyle(
+        "GSUM", parent=styles["Normal"],
+        fontSize=8, textColor=colors.Color(0.3, 0.3, 0.3),
+        fontName="Helvetica-Oblique", spaceAfter=4,
+    )
+    s_footer_txt = ParagraphStyle(
+        "GF", parent=styles["Normal"],
+        fontSize=7, alignment=TA_CENTER,
+        textColor=colors.grey, fontName="Helvetica",
+    )
+
+    story = []
+
+    # ════════════════════════════════════════════════════════
+    # PORTADA / ENCABEZADO GLOBAL
+    # ════════════════════════════════════════════════════════
+    story.append(Paragraph(
+        "LIGA MUNICIPAL DE BASQUETBOL DE NOCHIXTLAN", s_title))
+    story.append(Paragraph(
+        "REPORTE GENERAL DE ELEGIBILIDAD PARA LIGUILLA", s_title))
+    story.append(HRFlowable(
+        width="100%", thickness=2, color=colors.black, spaceAfter=6))
+
+    story.append(Paragraph(f"<b>Fecha de emision:</b> {fecha_str}", s_info))
+    story.append(Paragraph(f"<b>Categoria:</b> {categoria}", s_info))
+    story.append(Paragraph(f"<b>Temporada:</b> {temporada_nombre}", s_info))
+    story.append(Paragraph(
+        f"<b>Total de equipos:</b> {len(equipos_data)}", s_info))
+
+    total_jug  = sum(len(e["jugadores"]) for e in equipos_data)
+    total_eleg = sum(
+        sum(1 for j in e["jugadores"] if j["Estatus"] == "ELEGIBLE")
+        for e in equipos_data
+    )
+    story.append(Paragraph(
+        f"<b>Total de jugadores en plantilla:</b> {total_jug}", s_info))
+    story.append(Paragraph(
+        f"<b>Total elegibles para Liguilla:</b> {total_eleg} de {total_jug}", s_info))
+    story.append(Spacer(1, 0.5*cm))
+    story.append(HRFlowable(
+        width="100%", thickness=0.5, color=colors.grey, spaceAfter=8))
+
+    # ════════════════════════════════════════════════════════
+    # BLOQUE POR EQUIPO
+    # ════════════════════════════════════════════════════════
+    COL_WIDTHS = [0.8*cm, 6.5*cm, 2.8*cm, 2.5*cm, 3*cm]
+    HEADER_ROW = ["#", "Jugador", "Asistencias", "Minimo req.", "Estatus"]
+
+    for equipo_info in equipos_data:
+        equipo_nombre  = equipo_info["equipo"]
+        total_partidos = equipo_info["total_partidos"]
+        min_req        = equipo_info["min_requerido"]
+        jugadores      = equipo_info["jugadores"]
+        n_eleg         = sum(1 for j in jugadores if j["Estatus"] == "ELEGIBLE")
+        n_total        = len(jugadores)
+
+        block = []
+
+        # Encabezado del equipo
+        block.append(Paragraph(f"Equipo: {equipo_nombre}", s_team_header))
+        block.append(HRFlowable(
+            width="100%", thickness=1, color=colors.black, spaceAfter=3))
+        block.append(Paragraph(
+            f"Partidos jugados: {total_partidos}   |   "
+            f"Minimo requerido: {min_req}  "
+            f"( {total_partidos} // 2 + 1 )   |   "
+            f"Elegibles: {n_eleg} de {n_total}",
+            s_summary,
+        ))
+
+        if not jugadores:
+            block.append(Paragraph("Sin jugadores en cedula.", s_summary))
+        else:
+            data = [HEADER_ROW]
+            for i, j in enumerate(jugadores, start=1):
+                # Estatus limpio en espanol, sin emojis
+                estatus_raw = j["Estatus"]
+                estatus_txt = "ELEGIBLE" if estatus_raw == "ELEGIBLE" else "NO ELEGIBLE"
+                data.append([
+                    str(i),
+                    j["Jugador"],
+                    str(j["Asistencias"]),
+                    str(j["Minimo"]) if "Minimo" in j else str(j.get("Mínimo", min_req)),
+                    estatus_txt,
+                ])
+
+            tbl = Table(data, colWidths=COL_WIDTHS, repeatRows=1)
+            estatus_colors = [
+                ("TEXTCOLOR",
+                 (4, row_i + 1), (4, row_i + 1),
+                 colors.Color(0.1, 0.5, 0.1)
+                 if data[row_i + 1][4] == "ELEGIBLE"
+                 else colors.Color(0.7, 0.1, 0.1))
+                for row_i in range(len(jugadores))
+            ]
+            tbl.setStyle(TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, 0),  colors.black),
+                ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+                ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+                ("FONTSIZE",      (0, 0), (-1, 0),  8),
+                ("ALIGN",         (0, 0), (-1, 0),  "CENTER"),
+                ("TOPPADDING",    (0, 0), (-1, 0),  4),
+                ("BOTTOMPADDING", (0, 0), (-1, 0),  4),
+                ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+                ("FONTSIZE",      (0, 1), (-1, -1), 8),
+                ("ALIGN",         (0, 1), (0, -1),  "CENTER"),
+                ("ALIGN",         (1, 1), (1, -1),  "LEFT"),
+                ("ALIGN",         (2, 1), (-1, -1), "CENTER"),
+                ("TOPPADDING",    (0, 1), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
+                ("ROWBACKGROUNDS",(0, 1), (-1, -1),
+                 [colors.white, colors.Color(0.95, 0.95, 0.95)]),
+                ("FONTNAME",      (4, 1), (4, -1),  "Helvetica-Bold"),
+                ("GRID",          (0, 0), (-1, -1), 0.3, colors.grey),
+                ("BOX",           (0, 0), (-1, -1), 0.8, colors.black),
+                *estatus_colors,
+            ]))
+            block.append(tbl)
+
+        block.append(Spacer(1, 0.4*cm))
+        story.append(KeepTogether(block))
+
+    # ════════════════════════════════════════════════════════
+    # CIERRE: REGLA LEGAL + FIRMAS
+    # ════════════════════════════════════════════════════════
+    story.append(Spacer(1, 0.6*cm))
+    story.append(HRFlowable(
+        width="100%", thickness=1, color=colors.black, spaceAfter=6))
+    story.append(Paragraph(
+        "<i>Regla de elegibilidad: el jugador debe haber asistido al menos al "
+        "50%+1 de los partidos jugados por su equipo. "
+        "Formula: Minimo requerido = (Partidos del equipo // 2) + 1.</i>",
+        s_footer_txt,
+    ))
+    story.append(Spacer(1, 2*cm))
+
+    firma_data = [
+        ["________________________________", "", "________________________________"],
+        ["Firma del Presidente de la Liga",  "", "Sello Oficial de la Liga"],
+    ]
+    firma_tbl = Table(firma_data, colWidths=[6*cm, 3*cm, 6*cm])
+    firma_tbl.setStyle(TableStyle([
+        ("FONTNAME",  (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE",  (0, 0), (-1, -1), 9),
+        ("ALIGN",     (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING",(0, 1), (-1, 1),  2),
+    ]))
+    story.append(firma_tbl)
+
+    doc.build(story, canvasmaker=_PageNumCanvas)
+    return buf.getvalue()
+
 def _section_management() -> None:
     cat = st.selectbox("Categoría", CATEGORIES, key="mgmt_cat")
 
@@ -2658,43 +2980,118 @@ def _section_management() -> None:
                 except Exception as exc:
                     st.error(f"🔴 Error al realizar el traspaso: `{exc}`")
 
-    # ── Elegibilidad ──────────────────────────────────────────────────────
+    # ── Elegibilidad para Liguilla (Reporte General) ──────────────────
     with tabs[3]:
+        st.subheader("🏆 Elegibilidad para Liguilla")
+        st.caption("Vista y reporte de toda la categoría — calculado equipo por equipo.")
+
         teams, season = load_teams()
         if not teams:
-            st.info("Sin equipos.")
+            st.info("Sin equipos registrados.")
+            return
+        if not season:
+            st.info("Sin temporada activa.")
             return
 
-        t_sel = st.selectbox(
-            "Equipo", [t.name for t in teams], key="poff_team")
+        # ── Calcular elegibilidad de TODOS los equipos ────────────────
         with get_db() as db:
             s = active_season(db, cat)
-            tobj = db.query(Team).filter(
-                Team.name == t_sel, Team.season_id == s.id
-            ).first()
-            eligs = playoff_eligible_players(db, tobj, s.id)
+            equipos_data = _calc_elegibilidad_categoria(db, s.id)
 
-        if eligs:
-            df_eligs = pd.DataFrame(eligs).rename(columns={"#": "Dorsal"})
-            if df_eligs.empty:
-                st.info("No hay registros disponibles.")
-            else:
-                st.dataframe(
-                    df_eligs,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Jugador":    st.column_config.TextColumn("Jugador",              width="medium"),
-                        "Dorsal":     st.column_config.NumberColumn("Dorsal",  format="%d", width="small"),
-                        "PJ":         st.column_config.NumberColumn("PJ",      format="%d", width="small"),
-                        "Requeridos": st.column_config.NumberColumn("Req.",    format="%d", width="small"),
-                        "Elegible":   st.column_config.TextColumn("Elegible",             width="small"),
-                    },
+        if not equipos_data:
+            st.info("Sin datos para mostrar.")
+            return
+
+        # ── Métricas globales ─────────────────────────────────────────
+        total_jug  = sum(len(e["jugadores"]) for e in equipos_data)
+        total_eleg = sum(
+            sum(1 for j in e["jugadores"] if j["Estatus"] == "ELEGIBLE")
+            for e in equipos_data
+        )
+        mg1, mg2, mg3 = st.columns(3)
+        mg1.metric("Equipos",         len(equipos_data))
+        mg2.metric("Total jugadores", total_jug)
+        mg3.metric("Elegibles",       f"{total_eleg} / {total_jug}")
+
+        st.markdown("---")
+
+        # ── Vista previa: tabla global con filtro por equipo ──────────
+        todos_df_rows = []
+        for e in equipos_data:
+            for j in e["jugadores"]:
+                todos_df_rows.append({
+                    "Equipo":      e["equipo"],
+                    "Jugador":     j["Jugador"],
+                    "Asistencias": j["Asistencias"],
+                    "Mínimo":      j["Mínimo"],
+                    "Estatus":     "✅ Elegible" if j["Estatus"] == "ELEGIBLE"
+                                   else "❌ No Elegible",
+                })
+
+        df_global = pd.DataFrame(todos_df_rows)
+
+        # Filtro por equipo (opcional)
+        opciones_eq = ["Todos los equipos"] + [e["equipo"] for e in equipos_data]
+        eq_filtro = st.selectbox(
+            "Filtrar vista por equipo", opciones_eq, key="eleg_eq_filtro"
+        )
+        df_vista = (df_global if eq_filtro == "Todos los equipos"
+                    else df_global[df_global["Equipo"] == eq_filtro])
+
+        st.markdown("""
+<style>
+[data-testid="stDataFrame"] td,
+[data-testid="stDataFrame"] th {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    font-size: 0.85rem !important;
+    padding: 3px 6px !important;
+}
+</style>""", unsafe_allow_html=True)
+
+        st.dataframe(
+            df_vista,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Equipo":      st.column_config.TextColumn("Equipo",  width="medium"),
+                "Jugador":     st.column_config.TextColumn("Jugador", width="medium"),
+                "Asistencias": st.column_config.NumberColumn(
+                                   "Asist.", format="%d", width="small"),
+                "Mínimo":      st.column_config.NumberColumn(
+                                   "Mín.",   format="%d", width="small"),
+                "Estatus":     st.column_config.TextColumn("Estatus", width="small"),
+            },
+        )
+        st.caption("Regla: Mínimo = (Partidos del equipo // 2) + 1  — calculado de forma independiente por equipo.")
+
+        st.markdown("---")
+
+        # ── Botón de descarga PDF general ────────────────────────────
+        if st.button("📥 Generar Reporte General de Elegibilidad (PDF)",
+                     key="btn_gen_pdf_general", type="primary",
+                     use_container_width=True):
+            try:
+                with st.spinner("Generando PDF..."):
+                    pdf_bytes = _generar_pdf_general_elegibilidad(
+                        categoria=cat,
+                        temporada_nombre=s.name,
+                        equipos_data=equipos_data,
+                    )
+                fname = f"elegibilidad_general_{cat}_{s.name.replace(' ','_')}.pdf"
+                st.download_button(
+                    label="⬇️ Descargar Reporte General (PDF)",
+                    data=pdf_bytes,
+                    file_name=fname,
+                    mime="application/pdf",
+                    key="dl_pdf_general",
                 )
-            st.caption("Umbral: ≥ (partidos_equipo ÷ 2) + 1")
-        else:
-            st.info("Sin partidos jugados aún.")
-
+                st.success(
+                    f"✅ PDF listo · {len(equipos_data)} equipos · "
+                    f"{total_eleg}/{total_jug} jugadores elegibles."
+                )
+            except Exception as exc:
+                st.error(f"🔴 Error al generar PDF: `{exc}`")
     # ── Permisos & WOs ────────────────────────────────────────────────────
     with tabs[4]:
         teams, season = load_teams()
