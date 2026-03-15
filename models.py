@@ -166,7 +166,7 @@ class PlayerMatchStat(Base):
     Estadísticas de un jugador en un partido específico.
     IMPORTANTE: team_id refleja el equipo con el que JUGÓ ese partido.
     Esto permite filtrar stats por equipo actual después de un traspaso.
-    Solo se rastrean: puntos, triples, faltas (NO asistencias de canasta).
+    Solo se rastrean: puntos y triples. Faltas eliminadas en v2.
     """
     __tablename__ = "player_match_stats"
 
@@ -177,7 +177,7 @@ class PlayerMatchStat(Base):
     played    = Column(Boolean, default=True)   # Asistencia al partido (presencia)
     points    = Column(Integer, default=0)
     triples   = Column(Integer, default=0)
-    fouls     = Column(Integer, default=0)
+    # fouls eliminado v2: la liga solo rastrea puntos y triples
 
     match  = relationship("Match",  back_populates="player_stats")
     player = relationship("Player", back_populates="match_stats")

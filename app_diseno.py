@@ -158,11 +158,44 @@ html, body,
     font-weight: 900 !important;
 }
 
-/* ── Dataframes — borde externo (Streamlit maneja el tema interno) ── */
-[data-testid="stDataFrame"] {
+/* ── Dataframes / Tables — texto blanco blindado en dark mode ── */
+[data-testid="stDataFrame"],
+[data-testid="stTable"] {
     border: 1px solid #252535 !important;
     border-radius: 10px !important;
     overflow: hidden;
+    background-color: #12121e !important;
+}
+
+/* Celdas td (st.table) — blanco puro */
+[data-testid="stTable"] td,
+[data-testid="stTable"] td * {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    background-color: #12121e !important;
+}
+
+/* Encabezados th (st.table) — naranja */
+[data-testid="stTable"] th,
+[data-testid="stTable"] th * {
+    color: #F26B0F !important;
+    -webkit-text-fill-color: #F26B0F !important;
+    font-weight: 700 !important;
+    background-color: #0f0f1a !important;
+    border-bottom: 1px solid #F26B0F !important;
+}
+
+/* st.dataframe: roles del canvas DOM */
+[data-testid="stDataFrame"] [role="gridcell"],
+[data-testid="stDataFrame"] [role="gridcell"] * {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+}
+[data-testid="stDataFrame"] [role="columnheader"],
+[data-testid="stDataFrame"] [role="columnheader"] * {
+    color: #F26B0F !important;
+    -webkit-text-fill-color: #F26B0F !important;
+    font-weight: 700 !important;
 }
 
 /* ── Títulos ── */
@@ -461,7 +494,7 @@ def login_widget_top() -> None:
 
 def _calc_standings_raw(db: Session, season_id: int) -> pd.DataFrame:
     # Calcula tabla de posiciones. Usado en carga inicial y en admin.
-    # Sistema: PG×3 + PP×1 + WO×1 | orden: Pts DESC, DP DESC
+    # Sistema v2: PG×3 + PP×1 | WO = derrota (0 pts) | orden: Pts DESC, DP DESC
     teams = db.query(Team).filter(Team.season_id == season_id).all()
     if not teams:
         return pd.DataFrame()
@@ -505,6 +538,7 @@ def _calc_standings_raw(db: Session, season_id: int) -> pd.DataFrame:
                 stats[a]["PG"] += 1
 
         elif m.status == "WO Local":
+            # Local hace WO: visitante gana (PG×3), local pierde (WO, 0 pts)
             stats[h]["PJ"] += 1
             stats[h]["WO"] += 1
             stats[h]["PC"] += 20
@@ -513,6 +547,7 @@ def _calc_standings_raw(db: Session, season_id: int) -> pd.DataFrame:
             stats[a]["PF"] += 20
 
         elif m.status == "WO Visitante":
+            # Visitante hace WO: local gana (PG×3), visitante pierde (WO, 0 pts)
             stats[a]["PJ"] += 1
             stats[a]["WO"] += 1
             stats[a]["PC"] += 20
@@ -521,6 +556,7 @@ def _calc_standings_raw(db: Session, season_id: int) -> pd.DataFrame:
             stats[h]["PF"] += 20
 
         elif m.status == "WO Doble":
+            # Ambos hacen WO: ambos pierden, 0 pts cada uno
             stats[h]["PJ"] += 1
             stats[h]["WO"] += 1
             stats[a]["PJ"] += 1
@@ -528,7 +564,8 @@ def _calc_standings_raw(db: Session, season_id: int) -> pd.DataFrame:
 
     rows = []
     for s in stats.values():
-        pts = s["PG"] * 3 + s["PP"] * 1 + s["WO"] * 1
+        # Sistema v2: PG×3 + PP×1. WO = derrota por default → 0 pts (no suma PP)
+        pts = s["PG"] * 3 + s["PP"] * 1
         rows.append({**s, "DP": s["PF"] - s["PC"], "Pts": pts})
 
     df = pd.DataFrame(rows)
@@ -709,7 +746,7 @@ def _team_player_stats(db: Session, season_id: int) -> dict:
             func.count(PlayerMatchStat.id).label("gp"),
             func.sum(PlayerMatchStat.points).label("pts"),
             func.sum(PlayerMatchStat.triples).label("trp"),
-            func.sum(PlayerMatchStat.fouls).label("fls"),
+            # fouls removed v2
         )
         .join(Player, Player.id == PlayerMatchStat.player_id)
         .join(Team,   Team.id == PlayerMatchStat.team_id)
@@ -734,29 +771,25 @@ def _team_player_stats(db: Session, season_id: int) -> dict:
         if r.pid not in teams_data[tid]["players_raw"]:
             teams_data[tid]["players_raw"][r.pid] = {
                 "pid": r.pid, "name": r.pname, "number": r.num,
-                "gp_all": 0, "pts_all": 0, "trp_all": 0, "fls_all": 0,
-                "gp_reg": 0, "pts_reg": 0, "trp_reg": 0, "fls_reg": 0,
-                "gp_lig": 0, "pts_lig": 0, "trp_lig": 0, "fls_lig": 0,
+                "gp_all": 0, "pts_all": 0, "trp_all": 0,
+                "gp_reg": 0, "pts_reg": 0, "trp_reg": 0,
+                "gp_lig": 0, "pts_lig": 0, "trp_lig": 0,
             }
         p = teams_data[tid]["players_raw"][r.pid]
         gp = r.gp or 0
         pts = r.pts or 0
         trp = r.trp or 0
-        fls = r.fls or 0
         p["gp_all"] += gp
         p["pts_all"] += pts
         p["trp_all"] += trp
-        p["fls_all"] += fls
         if r.phase == "Fase Regular":
             p["gp_reg"] += gp
             p["pts_reg"] += pts
             p["trp_reg"] += trp
-            p["fls_reg"] += fls
         elif r.phase == "Liguilla":
             p["gp_lig"] += gp
             p["pts_lig"] += pts
             p["trp_lig"] += trp
-            p["fls_lig"] += fls
     return teams_data
 
 
@@ -1010,63 +1043,65 @@ def render_leaders_table(
     limit: int = 10,
 ) -> None:
     """
-    Tabla profesional de líderes con ProgressColumn nativa de Streamlit.
-    - Rank con medallas para el top 3
-    - ProgressColumn para destacar visualmente quién lidera
-    - Estado vacío con mensaje limpio (sin mock data)
-    Reemplaza render_stat_cards (tarjetas HTML eliminadas en v5).
+    Tabla de líderes compacta — mobile-first, st.dataframe nativo.
+    - Encabezados cortos: # / Jugador / Eq. / Pts o Tri / Eq.
+    - CSS con padding mínimo y fuente 0.8rem para caber en 360px
+    - Columnas small en todo excepto Jugador (medium)
+    - Tripleros: columna adicional "Eq." (triples x 3)
     """
-    RANK_LABELS = {1: "🥇 1°", 2: "🥈 2°", 3: "🥉 3°"}
-
     if not players:
         st.info("Aún no hay estadísticas registradas para esta temporada.")
         return
 
-    top = players[:limit]
+    st.markdown("""
+<style>
+[data-testid="stDataFrame"] td,
+[data-testid="stDataFrame"] th {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    font-size: 0.8rem !important;
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+    padding-top: 2px !important;
+    padding-bottom: 2px !important;
+}
+[data-testid="stDataFrame"] > div { width: 100% !important; }
+</style>
+""", unsafe_allow_html=True)
+
+    MEDALS     = {1: "🥇", 2: "🥈", 3: "🥉"}
+    is_triples = (stat_key == "3PT")
+    # Etiqueta corta para el encabezado de la columna de estadísticas
+    stat_short = "Tri" if is_triples else "Pts"
+    top        = players[:limit]
 
     rows = []
     for i, p in enumerate(top, start=1):
-        valor_base = int(p.get(stat_key, 0))
-
-        row_data = {
-            "Rank":    RANK_LABELS.get(i, f"   {i}°"),
-            "Jugador": p.get("Jugador", "—"),
-            "Equipo":  p.get("Equipo",  "—"),
-            col_label: valor_base,
+        val = int(p.get(stat_key, 0))
+        row = {
+            "#":        MEDALS.get(i, str(i)),
+            "Jugador":  p.get("Jugador", "—"),
+            "Eq.":      p.get("Equipo",  "—"),
+            stat_short: val,
         }
-
-        # Si la tabla es de Triples, añadimos la equivalencia en puntos
-        if "Triple" in col_label:
-            row_data["Pts Eq."] = valor_base * 3
-
-        rows.append(row_data)
+        if is_triples:
+            row["P.Eq."] = val * 3   # Puntos Equivalentes (triples × 3)
+        rows.append(row)
 
     df = pd.DataFrame(rows)
 
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Rank": st.column_config.TextColumn(
-                "Rank", width="small",
-            ),
-            "Jugador": st.column_config.TextColumn(
-                "Jugador", width="small",
-            ),
-            "Equipo": st.column_config.TextColumn(
-                "Equipo", width="small",
-            ),
-            col_label: st.column_config.NumberColumn(
-                col_label,
-                format="%d",
-                width="small",
-            ),
-            "Pts Eq.": st.column_config.NumberColumn("Pts Eq.", format="%d", width="small", help="Puntos equivalentes (Triples x 3)"),
-        },
-    )
+    col_cfg = {
+        "#":        st.column_config.TextColumn("#",       width="small"),
+        "Jugador":  st.column_config.TextColumn("Jugador", width="medium"),
+        "Eq.":      st.column_config.TextColumn("Eq.",     width="small"),
+        stat_short: st.column_config.NumberColumn(stat_short, format="%d", width="small"),
+    }
+    if is_triples:
+        col_cfg["P.Eq."] = st.column_config.NumberColumn(
+            "P.Eq.", format="%d", width="small", help="Triples × 3",
+        )
 
-
+    st.dataframe(df, use_container_width=True, hide_index=True, column_config=col_cfg)
 def render_stat_cards(
     players: list,
     stat_key: str,
@@ -1142,8 +1177,7 @@ def _show_scoreboard(home_name: str, away_name: str,
 # ================================================================
 # CAPTURA — helpers data_editor
 # ================================================================
-LINEUP_COLS = ["player_id", "Jugador",
-               "Asistencia", "Faltas", "Triples", "Puntos"]
+LINEUP_COLS = ["player_id", "Jugador", "Asistencia", "Triples", "Puntos"]
 
 
 def _build_lineup_df(players: list) -> pd.DataFrame:
@@ -1151,11 +1185,36 @@ def _build_lineup_df(players: list) -> pd.DataFrame:
         {
             "player_id":  p.id,
             "Jugador":    f"#{p.number} {short_name(p.name)}",
-            "Asistencia": False, "Faltas": 0, "Triples": 0, "Puntos": 0,
+            "Asistencia": False, "Triples": 0, "Puntos": 0,
         }
         for p in players
     ]
     return pd.DataFrame(rows, columns=LINEUP_COLS)
+
+
+# Columnas WO: solo Asistencia — Triples y Puntos deshabilitados
+WO_COLS = ["player_id", "Jugador", "Asistencia"]
+
+def _build_wo_df(players: list) -> pd.DataFrame:
+    """DataFrame simplificado para modo WO: solo checkbox de asistencia."""
+    rows = [
+        {
+            "player_id":  p.id,
+            "Jugador":    f"#{p.number} {short_name(p.name)}",
+            "Asistencia": False,
+        }
+        for p in players
+    ]
+    return pd.DataFrame(rows, columns=WO_COLS)
+
+
+def _wo_col_config() -> dict:
+    """Column config WO: Asistencia editable, resto deshabilitado."""
+    return {
+        "player_id":  st.column_config.NumberColumn("ID",  disabled=True, width="small"),
+        "Jugador":    st.column_config.TextColumn(          disabled=True, width="medium"),
+        "Asistencia": st.column_config.CheckboxColumn("✅ Asistió", width="small"),
+    }
 
 
 def _col_config() -> dict:
@@ -1163,7 +1222,6 @@ def _col_config() -> dict:
         "player_id":  st.column_config.NumberColumn("ID",       disabled=True, width="small"),
         "Jugador":    st.column_config.TextColumn(disabled=True, width="medium"),
         "Asistencia": st.column_config.CheckboxColumn(width="small"),
-        "Faltas":     st.column_config.NumberColumn(min_value=0, max_value=5,  step=1, width="small"),
         "Triples":    st.column_config.NumberColumn(min_value=0, max_value=30, step=1, width="small"),
         "Puntos":     st.column_config.NumberColumn(min_value=0, max_value=99, step=1, width="small"),
     }
@@ -1173,26 +1231,20 @@ def _validate_lineup(df: pd.DataFrame, team_name: str = "") -> list:
     prefix = f"**[{team_name}]** " if team_name else ""
     errors = []
     for _, row in df.iterrows():
-        nombre = row["Jugador"]
+        nombre  = row["Jugador"]
         asistio = bool(row["Asistencia"])
-        faltas = int(row["Faltas"])
         triples = int(row["Triples"])
-        puntos = int(row["Puntos"])
-        tiene_stats = faltas > 0 or triples > 0 or puntos > 0
+        puntos  = int(row["Puntos"])
+        tiene_stats = triples > 0 or puntos > 0
 
         if tiene_stats and not asistio:
             campos = []
-            if puntos > 0:
-                campos.append(f"{puntos} pts")
-            if triples > 0:
-                campos.append(f"{triples} triples")
-            if faltas > 0:
-                campos.append(f"{faltas} faltas")
+            if puntos  > 0: campos.append(f"{puntos} pts")
+            if triples > 0: campos.append(f"{triples} triples")
             errors.append(
                 f"{prefix}**{nombre}** tiene estadísticas "
                 f"({', '.join(campos)}) pero **Asistencia no está marcada**."
             )
-
         if asistio and triples > 0 and puntos < triples * 3:
             errors.append(
                 f"{prefix}**{nombre}** — Puntos ({puntos}) < Triples×3 "
@@ -1207,7 +1259,6 @@ def _save_lineup(db: Session, match_id: int, team_id: int, df: pd.DataFrame) -> 
             match_id=match_id, player_id=int(row["player_id"]),
             team_id=team_id,   played=bool(row["Asistencia"]),
             points=int(row["Puntos"]), triples=int(row["Triples"]),
-            fouls=int(row["Faltas"]),
         ))
 
 # ================================================================
@@ -1266,7 +1317,7 @@ def _render_liguilla(liguilla: list, team_map: dict) -> None:
         _, winner_id = _series_status(games, tid1, tid2, n1, n2)
         played = sum(1 for g in games if g["status"] == "Jugado")
         if winner_id:
-            badge = f"Serie {max(w1, w2)}&ndash;{min(w1, w2)}"
+            badge = f"Serie {max(w1,w2)}&ndash;{min(w1,w2)}"
             badge_cls = "badge-done"
         elif played > 0:
             badge = f"En curso {w1}&ndash;{w2}"
@@ -1288,8 +1339,8 @@ def _render_liguilla(liguilla: list, team_map: dict) -> None:
             n2s = (n2[:15] + "…") if len(n2) > 15 else n2
             r1c = "row-win" if n1w else ("row-lose" if n2w else "row-neutral")
             r2c = "row-win" if n2w else ("row-lose" if n1w else "row-neutral")
-            t1 = " &#127942;" if n1w else ""
-            t2 = " &#127942;" if n2w else ""
+            t1  = " &#127942;" if n1w else ""
+            t2  = " &#127942;" if n2w else ""
             cards += f"""
             <div class="matchup">
               <div class="team-row {r1c}">
@@ -1326,8 +1377,7 @@ def _render_liguilla(liguilla: list, team_map: dict) -> None:
     cols_html = ""
     for i, rnd in enumerate(rondas):
         rnd_label = ROUND_NAMES.get(rnd, rnd)
-        connector = '<div class="connector"></div>' if i < len(
-            rondas) - 1 else ""
+        connector = '<div class="connector"></div>' if i < len(rondas) - 1 else ""
         cols_html += f"""
         <div class="col">
           <div class="col-header">{rnd_label}</div>
@@ -1514,7 +1564,7 @@ def _render_liguilla(liguilla: list, team_map: dict) -> None:
 </html>"""
 
     # Altura dinámica: más rondas o partidos = más altura
-    n_matchups = sum(len(v) for v in by_round.values())
+    n_matchups  = sum(len(v) for v in by_round.values())
     base_height = 320 + n_matchups * 95
     components.html(html, height=min(base_height, 950), scrolling=False)
 
@@ -1528,8 +1578,7 @@ def _render_liguilla(liguilla: list, team_map: dict) -> None:
                 n2 = team_map.get(tid2, "?")
                 st.markdown(f"**{n1} vs {n2}**")
                 for g in sorted(games, key=lambda x: x["game_number"]):
-                    gdate = g["sched"].strftime(
-                        "%d/%m %H:%M") if g["sched"] else "—"
+                    gdate = g["sched"].strftime("%d/%m %H:%M") if g["sched"] else "—"
                     if g["status"] == "Jugado":
                         st.markdown(
                             f"  ✅ Juego {g['game_number']}: "
@@ -1542,8 +1591,6 @@ def _render_liguilla(liguilla: list, team_map: dict) -> None:
                             f"{g['home_name']} vs {g['away_name']} · {gdate}"
                         )
                 st.markdown("")
-
-
 def page_standings() -> None:
     data = st.session_state["_app_data"]
     st.title("🏆 Posiciones")
@@ -1575,15 +1622,42 @@ def page_standings() -> None:
             st.info("Aún no hay partidos registrados.")
             return
 
-        df_display = df.copy()
-        df_display.insert(0, "Pos", ["🥇" if i == 0 else f"{i+1}°"
-                                     for i in range(len(df_display))])
-        df_display = df_display.drop(columns=["#"])
-        st.table(df_display.set_index("Pos"))
+        st.markdown("""
+<style>
+[data-testid="stDataFrame"] td,
+[data-testid="stDataFrame"] th {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    font-size: 0.85rem !important;
+    padding: 3px 6px !important;
+}
+[data-testid="stDataFrame"] { width: 100% !important; }
+</style>
+""", unsafe_allow_html=True)
+
+        df_display = df.rename(columns={"#": "Pos"})
+
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Pos":    st.column_config.NumberColumn("Pos",  format="%d", width="small"),
+                "Equipo": st.column_config.TextColumn("Equipo",              width="medium"),
+                "PJ":     st.column_config.NumberColumn("PJ",  format="%d", width="small"),
+                "PG":     st.column_config.NumberColumn("PG",  format="%d", width="small"),
+                "PP":     st.column_config.NumberColumn("PP",  format="%d", width="small"),
+                "WO":     st.column_config.NumberColumn("WO",  format="%d", width="small"),
+                "PF":     st.column_config.NumberColumn("PF",  format="%d", width="small"),
+                "PC":     st.column_config.NumberColumn("PC",  format="%d", width="small"),
+                "DP":     st.column_config.NumberColumn("DP",  format="%d", width="small"),
+                "Pts":    st.column_config.NumberColumn("Pts", format="%d", width="small"),
+            },
+        )
         st.caption(
-            "PJ=Jugados · PG=Ganados · PP=Perdidos · WO=Defaults · "
-            "PF=Pts a Favor · PC=Pts en Contra · DP=Diferencia · "
-            "Pts = PG×3 + PP×1 + WO×1"
+            "PJ Jugados · PG Ganados · PP Perdidos · WO Default · "
+            "PF Pts a Favor · PC Pts en Contra · DP Diferencia · "
+            "Pts = PG×3 + PP×1"
         )
     else:
         _render_liguilla(d.get("liguilla", []), d["team_map"])
@@ -1619,8 +1693,8 @@ def page_leaders() -> None:
     }
     sc_key, tr_key = phase_key_map[phase_label]
 
-    leaders = d["leaders"]
-    scorers = leaders.get(sc_key, [])
+    leaders  = d["leaders"]
+    scorers  = leaders.get(sc_key, [])
     tripleros = leaders.get(tr_key, [])
 
     hay_datos = bool(scorers or tripleros)
@@ -1632,16 +1706,17 @@ def page_leaders() -> None:
         )
         return
 
+    # st.columns([1,1]) → lado a lado en escritorio, apilado en móvil (nativo)
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.subheader("🏀 Top 10 Anotadores")
-        render_leaders_table(scorers, "PTS", "🏀 Puntos")
+        st.subheader("🏀 Anotadores")
+        render_leaders_table(scorers, "PTS", "Pts")
         render_record_banner(d.get("rec_pts"), "🏀")
 
     with col2:
-        st.subheader("🎯 Top 10 Tripleros")
-        render_leaders_table(tripleros, "3PT", "🎯 Triples")
+        st.subheader("🎯 Tripleros")
+        render_leaders_table(tripleros, "3PT", "Tri")
         render_record_banner(d.get("rec_trp"), "🎯")
 
 
@@ -1739,7 +1814,7 @@ def page_calendar() -> None:
     if df_cal.empty:
         st.info("No hay registros disponibles.")
     else:
-        st.table(df_cal.set_index(idx_col).rename_axis(rename_idx))
+        st.dataframe(df_cal, use_container_width=True, hide_index=True)
 
 
 # ================================================================
@@ -1802,7 +1877,7 @@ def page_teams() -> None:
         players_raw = ts.get("players_raw", {})
         rows = []
         for p in players_raw.values():
-            gp = p.get(f"gp_{pk}",  0)
+            gp  = p.get(f"gp_{pk}",  0)
             pts = p.get(f"pts_{pk}", 0)
             trp = p.get(f"trp_{pk}", 0)
             fls = p.get(f"fls_{pk}", 0)
@@ -1811,7 +1886,7 @@ def page_teams() -> None:
                 "#":       p["number"],
                 "Jugador": p["name"],
                 "PJ":      gp, "PTS": pts, "PPG": ppg_p,
-                "3PT":     trp, "FC":  fls,
+                "3PT":     trp,
             })
 
         df_p = (
@@ -1819,13 +1894,25 @@ def page_teams() -> None:
             .sort_values("PTS", ascending=False)
             .reset_index(drop=True)
         )
-        df_p.insert(
-            0, "Pos", ["🥇" if i == 0 else f"{i+1}°" for i in range(len(df_p))])
+        df_p.insert(0, "Pos", ["🥇" if i == 0 else f"{i+1}°" for i in range(len(df_p))])
         df_p = df_p.rename(columns={"#": "Dorsal", "FC": "Faltas"})
         if df_p.empty:
             st.info("No hay registros disponibles.")
         else:
-            st.table(df_p.set_index("Pos"))
+            st.dataframe(
+                df_p,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Pos":     st.column_config.TextColumn("Pos",    width="small"),
+                    "Dorsal":  st.column_config.NumberColumn("Dorsal", format="%d", width="small"),
+                    "Jugador": st.column_config.TextColumn("Jugador", width="medium"),
+                    "PJ":      st.column_config.NumberColumn("PJ",   format="%d", width="small"),
+                    "PTS":     st.column_config.NumberColumn("PTS",  format="%d", width="small"),
+                    "PPG":     st.column_config.NumberColumn("PPG",  format="%.1f", width="small"),
+                    "3PT":     st.column_config.NumberColumn("3PT",  format="%d", width="small"),
+                },
+            )
         st.caption(
             f"{phase_label} · Solo estadísticas con **{sel_name}** (anti-traspaso activo)"
         )
@@ -1838,6 +1925,9 @@ def _section_capture() -> None:
     cat = st.selectbox("Categoría", CATEGORIES, key="cap_cat")
     cap_tabs = st.tabs(["📥 Nuevo Resultado", "✏️ Editar Partido"])
 
+    # ════════════════════════════════════════════════════════
+    # TAB 0 — Nuevo Resultado
+    # ════════════════════════════════════════════════════════
     with cap_tabs[0]:
         with get_db() as db:
             season = active_season(db, cat)
@@ -1854,131 +1944,274 @@ def _section_capture() -> None:
             for m in pending:
                 ht = db.query(Team).get(m.home_team_id)
                 at = db.query(Team).get(m.away_team_id)
-                fecha = m.scheduled_date.strftime(
-                    "%d/%m/%y") if m.scheduled_date else "S/F"
+                fecha = m.scheduled_date.strftime("%d/%m/%y") if m.scheduled_date else "S/F"
                 match_opts[f"J{m.jornada} | {ht.name} vs {at.name} ({fecha})"] = m.id
 
         if not match_opts:
             st.success("✅ Todos los partidos están capturados.")
             return
 
-        sel_lbl = st.selectbox("Partido", list(
-            match_opts.keys()), key="cap_match")
+        sel_lbl  = st.selectbox("Partido", list(match_opts.keys()), key="cap_match")
         match_id = match_opts[sel_lbl]
 
         with get_db() as db:
-            match = db.query(Match).get(match_id)
+            match     = db.query(Match).get(match_id)
             home_team = db.query(Team).get(match.home_team_id)
             away_team = db.query(Team).get(match.away_team_id)
-            home_ps = (
-                db.query(Player)
-                .filter(Player.team_id == home_team.id, Player.is_active == True)
-                .order_by(Player.number).all()
-            )
-            away_ps = (
-                db.query(Player)
-                .filter(Player.team_id == away_team.id, Player.is_active == True)
-                .order_by(Player.number).all()
-            )
+            home_ps   = (db.query(Player)
+                         .filter(Player.team_id == home_team.id, Player.is_active == True)
+                         .order_by(Player.number).all())
+            away_ps   = (db.query(Player)
+                         .filter(Player.team_id == away_team.id, Player.is_active == True)
+                         .order_by(Player.number).all())
 
-        st.markdown(f"#### 🏠 {home_team.name}")
-        home_edited = st.data_editor(
-            _build_lineup_df(home_ps), column_config=_col_config(),
-            use_container_width=True, hide_index=True,
-            num_rows="fixed", key="ed_home_new",
-        )
-        st.markdown(f"#### ✈️ {away_team.name}")
-        away_edited = st.data_editor(
-            _build_lineup_df(away_ps), column_config=_col_config(),
-            use_container_width=True, hide_index=True,
-            num_rows="fixed", key="ed_away_new",
-        )
-
-        home_score = int(home_edited["Puntos"].sum())
-        away_score = int(away_edited["Puntos"].sum())
-        _show_scoreboard(home_team.name, away_team.name,
-                         home_score, away_score)
-
+        # ── Switch: partido normal vs. WO ──────────────────────────
         st.markdown("---")
-        if st.button("💾 GUARDAR RESULTADOS", type="primary",
-                     use_container_width=True, key="btn_save_new"):
-            errs = (
-                _validate_lineup(home_edited, home_team.name) +
-                _validate_lineup(away_edited, away_team.name)
+        es_wo = st.toggle(
+            "⚠️ Registrar como **Ganar por Default (W.O.)**",
+            key="cap_es_wo",
+        )
+
+        # ══════════════════════════════════════════════════════
+        # FLUJO WO — Partido por Default
+        # ══════════════════════════════════════════════════════
+        if es_wo:
+            st.warning(
+                "⚠️ **MODO DEFAULT ACTIVO** · Registra solo asistencia manual. "
+                "Puntos y triples deshabilitados. El equipo ganador recibe "
+                "**+3 pts** en tabla; el perdedor **0 pts**."
             )
-            if errs:
-                st.error("❌ Corrige los errores antes de guardar:")
-                for e in errs:
-                    st.markdown(f"  • {e}")
+
+            # ── Paso 1: Elegir equipo ganador ─────────────────────
+            wo_winner = st.radio(
+                "¿Quién GANA por default?",
+                [f"🏠 {home_team.name}", f"✈️ {away_team.name}"],
+                horizontal=True,
+                key="cap_wo_winner",
+            )
+            winner_is_home = wo_winner.startswith("🏠")
+            winner_team    = home_team if winner_is_home else away_team
+            loser_team     = away_team if winner_is_home else home_team
+            winner_ps      = home_ps  if winner_is_home else away_ps
+            loser_ps       = away_ps  if winner_is_home else home_ps
+
+            st.markdown("---")
+
+            # ── Paso 2: Asistencia manual de ambos equipos ────────
+            st.markdown(
+                f"**Marca quién llegó a la cancha** "
+                f"(solo los marcados contarán para elegibilidad Liguilla)"
+            )
+
+            wo_h_col, wo_a_col = st.columns(2)
+
+            with wo_h_col:
+                badge_h = "🏆 GANADOR" if winner_is_home else "❌ PERDEDOR"
+                st.markdown(
+                    f"**🏠 {home_team.name}** &nbsp; "
+                    f"<span style='color:{'#FFD700' if winner_is_home else '#888'}"
+                    f";font-size:0.75rem;font-weight:700'>{badge_h}</span>",
+                    unsafe_allow_html=True,
+                )
+                home_wo = st.data_editor(
+                    _build_wo_df(home_ps),
+                    column_config=_wo_col_config(),
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    key="ed_wo_home",
+                )
+
+            with wo_a_col:
+                badge_a = "🏆 GANADOR" if not winner_is_home else "❌ PERDEDOR"
+                st.markdown(
+                    f"**✈️ {away_team.name}** &nbsp; "
+                    f"<span style='color:{'#FFD700' if not winner_is_home else '#888'}"
+                    f";font-size:0.75rem;font-weight:700'>{badge_a}</span>",
+                    unsafe_allow_html=True,
+                )
+                away_wo = st.data_editor(
+                    _build_wo_df(away_ps),
+                    column_config=_wo_col_config(),
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    key="ed_wo_away",
+                )
+
+            st.markdown("---")
+
+            # ── Paso 3: Elegir quién recibe los 20 pts (ganador) ──
+            # Filtrar a los marcados como presentes en tiempo real
+            winner_wo_df   = home_wo if winner_is_home else away_wo
+            winner_present = winner_wo_df[winner_wo_df["Asistencia"] == True]
+
+            st.markdown(f"**Asignar 20 pts reglamentarios** (equipo ganador: {winner_team.name})")
+
+            if winner_present.empty:
+                st.info(
+                    "Marca al menos un jugador del equipo ganador como presente "
+                    "para asignarle los 20 pts reglamentarios."
+                )
+                scorer_id = None
             else:
+                # Construir opciones solo con los jugadores presentes
+                present_ids = winner_present["player_id"].tolist()
+                scorer_opts = {}
+                for p in (home_ps if winner_is_home else away_ps):
+                    if p.id in present_ids:
+                        scorer_opts[f"#{p.number} {short_name(p.name)}"] = p.id
+                scorer_opts["— Sin asignar puntos —"] = None
+
+                scorer_lbl = st.selectbox(
+                    "Jugador con 20 pts",
+                    list(scorer_opts.keys()),
+                    key="cap_wo_scorer",
+                )
+                scorer_id = scorer_opts[scorer_lbl]
+
+            # ── Marcador visual ───────────────────────────────────
+            h_score_disp = 20 if winner_is_home else 0
+            a_score_disp = 0  if winner_is_home else 20
+            _show_scoreboard(home_team.name, away_team.name,
+                             h_score_disp, a_score_disp)
+
+            # ── Guardar ───────────────────────────────────────────
+            n_home_present = int(home_wo["Asistencia"].sum())
+            n_away_present = int(away_wo["Asistencia"].sum())
+
+            st.caption(
+                f"Resumen: {home_team.name} **{n_home_present}** presentes · "
+                f"{away_team.name} **{n_away_present}** presentes"
+            )
+
+            if st.button("💾 GUARDAR W.O.", type="primary",
+                         use_container_width=True, key="btn_save_wo"):
                 try:
                     with get_db() as db:
-                        m = db.query(Match).get(match_id)
+                        m  = db.query(Match).get(match_id)
                         ht = db.query(Team).get(m.home_team_id)
                         at = db.query(Team).get(m.away_team_id)
+
+                        # Limpiar stats anteriores
                         db.query(PlayerMatchStat).filter(
                             PlayerMatchStat.match_id == match_id
                         ).delete()
-                        _save_lineup(db, match_id, ht.id, home_edited)
-                        _save_lineup(db, match_id, at.id, away_edited)
-                        m.status = "Jugado"
-                        m.home_score = home_score
-                        m.away_score = away_score
+
+                        # Status y marcador oficial
+                        if winner_is_home:
+                            m.status     = "WO Visitante"   # visitante hizo WO
+                            m.home_score = 20
+                            m.away_score = 0
+                        else:
+                            m.status     = "WO Local"       # local hizo WO
+                            m.home_score = 0
+                            m.away_score = 20
                         m.played_date = datetime.now()
+
+                        # ── Registrar asistencias del equipo LOCAL ────
+                        for _, row in home_wo.iterrows():
+                            present = bool(row["Asistencia"])
+                            if not present:
+                                continue          # no llegó → no se registra
+                            pts = 20 if (int(row["player_id"]) == scorer_id
+                                         and winner_is_home) else 0
+                            db.add(PlayerMatchStat(
+                                match_id=match_id,
+                                player_id=int(row["player_id"]),
+                                team_id=ht.id,
+                                played=True,
+                                points=pts,
+                                triples=0,
+                            ))
+
+                        # ── Registrar asistencias del equipo VISITANTE ─
+                        for _, row in away_wo.iterrows():
+                            present = bool(row["Asistencia"])
+                            if not present:
+                                continue
+                            pts = 20 if (int(row["player_id"]) == scorer_id
+                                         and not winner_is_home) else 0
+                            db.add(PlayerMatchStat(
+                                match_id=match_id,
+                                player_id=int(row["player_id"]),
+                                team_id=at.id,
+                                played=True,
+                                points=pts,
+                                triples=0,
+                            ))
+
                         db.commit()
+
                     _invalidate_data()
-                    st.success("✅ Partido guardado en Supabase.")
+                    st.success(
+                        f"✅ **W.O. guardado.** {winner_team.name} gana por default. "
+                        f"{n_home_present + n_away_present} jugadores con asistencia registrada."
+                    )
                     st.balloons()
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"🔴 Error al guardar el partido: `{exc}`")
+                    st.error(f"🔴 Error al guardar W.O.: `{exc}`")
 
-        st.markdown("---")
-        st.caption("Registrar resultado especial:")
-        cwo1, cwo2, cwo3 = st.columns(3)
-        with cwo1:
-            if st.button(f"⚠️ WO — {home_team.name}", key="wo_h"):
-                try:
-                    with get_db() as db:
-                        m = db.query(Match).get(match_id)
-                        m.status = "WO Local"
-                        m.home_score = 0
-                        m.away_score = 20
-                        db.commit()
-                    _invalidate_data()
-                    st.warning(f"WO registrado para {home_team.name}.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"🔴 Error: `{exc}`")
-        with cwo2:
-            if st.button(f"⚠️ WO — {away_team.name}", key="wo_a"):
-                try:
-                    with get_db() as db:
-                        m = db.query(Match).get(match_id)
-                        m.status = "WO Visitante"
-                        m.home_score = 20
-                        m.away_score = 0
-                        db.commit()
-                    _invalidate_data()
-                    st.warning(f"WO registrado para {away_team.name}.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"🔴 Error: `{exc}`")
-        with cwo3:
-            if st.button("🚫 WO Doble", key="wo_d"):
-                try:
-                    with get_db() as db:
-                        m = db.query(Match).get(match_id)
-                        m.status = "WO Doble"
-                        m.home_score = 0
-                        m.away_score = 0
-                        db.commit()
-                    _invalidate_data()
-                    st.warning("WO Doble registrado.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"🔴 Error: `{exc}`")
+        # ══════════════════════════════════════════════════════
+        # FLUJO NORMAL
+        # ══════════════════════════════════════════════════════
+        else:
+            st.markdown(f"#### 🏠 {home_team.name}")
+            home_edited = st.data_editor(
+                _build_lineup_df(home_ps), column_config=_col_config(),
+                use_container_width=True, hide_index=True,
+                num_rows="fixed", key="ed_home_new",
+            )
+            st.markdown(f"#### ✈️ {away_team.name}")
+            away_edited = st.data_editor(
+                _build_lineup_df(away_ps), column_config=_col_config(),
+                use_container_width=True, hide_index=True,
+                num_rows="fixed", key="ed_away_new",
+            )
 
+            home_score = int(home_edited["Puntos"].sum())
+            away_score = int(away_edited["Puntos"].sum())
+            _show_scoreboard(home_team.name, away_team.name,
+                             home_score, away_score)
+
+            st.markdown("---")
+            if st.button("💾 GUARDAR RESULTADOS", type="primary",
+                         use_container_width=True, key="btn_save_new"):
+                errs = (
+                    _validate_lineup(home_edited, home_team.name) +
+                    _validate_lineup(away_edited, away_team.name)
+                )
+                if errs:
+                    st.error("❌ Corrige los errores antes de guardar:")
+                    for e in errs:
+                        st.markdown(f"  • {e}")
+                else:
+                    try:
+                        with get_db() as db:
+                            m  = db.query(Match).get(match_id)
+                            ht = db.query(Team).get(m.home_team_id)
+                            at = db.query(Team).get(m.away_team_id)
+                            db.query(PlayerMatchStat).filter(
+                                PlayerMatchStat.match_id == match_id
+                            ).delete()
+                            _save_lineup(db, match_id, ht.id, home_edited)
+                            _save_lineup(db, match_id, at.id, away_edited)
+                            m.status      = "Jugado"
+                            m.home_score  = home_score
+                            m.away_score  = away_score
+                            m.played_date = datetime.now()
+                            db.commit()
+                        _invalidate_data()
+                        st.success("✅ Partido guardado en Supabase.")
+                        st.balloons()
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"🔴 Error al guardar el partido: `{exc}`")
+
+    # ════════════════════════════════════════════════════════
+    # TAB 1 — Editar partido ya capturado
+    # ════════════════════════════════════════════════════════
     with cap_tabs[1]:
         with get_db() as db:
             season = active_season(db, cat)
@@ -1999,37 +2232,34 @@ def _section_capture() -> None:
             for m in finished:
                 ht = db.query(Team).get(m.home_team_id)
                 at = db.query(Team).get(m.away_team_id)
-                fecha = m.scheduled_date.strftime(
-                    "%d/%m/%y") if m.scheduled_date else "S/F"
-                edit_opts[f"J{m.jornada} | {ht.name} vs {at.name} ({fecha}) — {m.status}"] = m.id
+                fecha = m.scheduled_date.strftime("%d/%m/%y") if m.scheduled_date else "S/F"
+                edit_opts[
+                    f"J{m.jornada} | {ht.name} vs {at.name} ({fecha}) — {m.status}"
+                ] = m.id
 
         if not edit_opts:
             st.info("No hay partidos finalizados para editar.")
             return
 
-        edit_lbl = st.selectbox("Partido a editar", list(
-            edit_opts.keys()), key="edit_match")
+        edit_lbl = st.selectbox("Partido a editar", list(edit_opts.keys()),
+                                key="edit_match")
         edit_mid = edit_opts[edit_lbl]
 
         with get_db() as db:
-            m2 = db.query(Match).get(edit_mid)
+            m2        = db.query(Match).get(edit_mid)
             home_team = db.query(Team).get(m2.home_team_id)
             away_team = db.query(Team).get(m2.away_team_id)
-            existing = {
+            existing  = {
                 s.player_id: s
                 for s in db.query(PlayerMatchStat)
                 .filter(PlayerMatchStat.match_id == edit_mid).all()
             }
-            home_ps = (
-                db.query(Player)
-                .filter(Player.team_id == home_team.id, Player.is_active == True)
-                .order_by(Player.number).all()
-            )
-            away_ps = (
-                db.query(Player)
-                .filter(Player.team_id == away_team.id, Player.is_active == True)
-                .order_by(Player.number).all()
-            )
+            home_ps = (db.query(Player)
+                       .filter(Player.team_id == home_team.id, Player.is_active == True)
+                       .order_by(Player.number).all())
+            away_ps = (db.query(Player)
+                       .filter(Player.team_id == away_team.id, Player.is_active == True)
+                       .order_by(Player.number).all())
 
         def build_edit_df(players):
             rows = []
@@ -2038,10 +2268,9 @@ def _section_capture() -> None:
                 rows.append({
                     "player_id":  p.id,
                     "Jugador":    f"#{p.number} {short_name(p.name)}",
-                    "Asistencia": s.played if s else False,
-                    "Faltas":     s.fouls if s else 0,
+                    "Asistencia": s.played  if s else False,
                     "Triples":    s.triples if s else 0,
-                    "Puntos":     s.points if s else 0,
+                    "Puntos":     s.points  if s else 0,
                 })
             return pd.DataFrame(rows, columns=LINEUP_COLS)
 
@@ -2076,7 +2305,7 @@ def _section_capture() -> None:
             else:
                 try:
                     with get_db() as db:
-                        m = db.query(Match).get(edit_mid)
+                        m  = db.query(Match).get(edit_mid)
                         ht = db.query(Team).get(m.home_team_id)
                         at = db.query(Team).get(m.away_team_id)
                         db.query(PlayerMatchStat).filter(
@@ -2084,8 +2313,8 @@ def _section_capture() -> None:
                         ).delete()
                         _save_lineup(db, edit_mid, ht.id, h_edit)
                         _save_lineup(db, edit_mid, at.id, a_edit)
-                        m.home_score = e_hs
-                        m.away_score = e_as
+                        m.home_score  = e_hs
+                        m.away_score  = e_as
                         m.played_date = datetime.now()
                         db.commit()
                     _invalidate_data()
@@ -2093,11 +2322,6 @@ def _section_capture() -> None:
                     st.rerun()
                 except Exception as exc:
                     st.error(f"🔴 Error al actualizar el partido: `{exc}`")
-
-
-# ================================================================
-# ADMIN: SECCIÓN GESTIÓN (CRUD equipos, jugadores, traspasos)
-# ================================================================
 def _section_management() -> None:
     cat = st.selectbox("Categoría", CATEGORIES, key="mgmt_cat")
 
@@ -2137,7 +2361,18 @@ def _section_management() -> None:
             if df_t.empty:
                 st.info("No hay registros disponibles.")
             else:
-                st.table(df_t.set_index("Equipo"))
+                st.dataframe(
+                    df_t,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Equipo":     st.column_config.TextColumn("Equipo",     width="medium"),
+                        "Estado":     st.column_config.TextColumn("Estado",     width="small"),
+                        "Jugadores":  st.column_config.NumberColumn("Jugadores", format="%d", width="small"),
+                        "Permisos":   st.column_config.NumberColumn("Permisos",  format="%d", width="small"),
+                        "WOs":        st.column_config.NumberColumn("WOs",       format="%d", width="small"),
+                    },
+                )
         else:
             st.info("Aún no hay equipos.")
 
@@ -2239,12 +2474,73 @@ def _section_management() -> None:
         st.progress(min(pct, 1.0))
 
         if players:
-            df_cedula = pd.DataFrame([
-                {"Dorsal": p.number, "Nombre": p.name,
-                 "Alta": str(p.joined_team_date or "—")}
-                for p in players
-            ])
-            st.table(df_cedula.set_index("Dorsal"))
+            # ── Calcular elegibilidad para Liguilla ──────────────
+            with get_db() as db:
+                s_elig = active_season(db, cat)
+                if s_elig:
+                    total_match = (
+                        db.query(func.count(Match.id))
+                        .filter(
+                            Match.season_id == s_elig.id,
+                            Match.status.in_(["Jugado", "WO Local",
+                                              "WO Visitante", "WO Doble"]),
+                            (Match.home_team_id == sel_team.id) |
+                            (Match.away_team_id == sel_team.id),
+                        )
+                        .scalar()
+                    ) or 0
+                    threshold = (total_match // 2) + 1
+
+                    # Asistencias por jugador
+                    asist_map = {}
+                    for p in players:
+                        gp = (
+                            db.query(func.count(PlayerMatchStat.id))
+                            .join(Match, Match.id == PlayerMatchStat.match_id)
+                            .filter(
+                                PlayerMatchStat.player_id == p.id,
+                                PlayerMatchStat.team_id  == sel_team.id,
+                                Match.season_id == s_elig.id,
+                                PlayerMatchStat.played == True,
+                            )
+                            .scalar()
+                        ) or 0
+                        asist_map[p.id] = gp
+                else:
+                    total_match = 0
+                    threshold   = 1
+                    asist_map   = {p.id: 0 for p in players}
+
+            st.caption(
+                f"Partidos del equipo: **{total_match}** · "
+                f"Mínimo para Liguilla: **{threshold}** partido(s) jugado(s)"
+            )
+
+            rows_ced = []
+            for p in players:
+                gp       = asist_map.get(p.id, 0)
+                elegible = gp >= threshold if total_match > 0 else False
+                badge    = "✅ Elegible" if elegible else f"❌ Falta {threshold - gp}"
+                rows_ced.append({
+                    "Dorsal":   p.number,
+                    "Nombre":   p.name,
+                    "Alta":     str(p.joined_team_date or "—"),
+                    "PJ":       gp,
+                    "Liguilla": badge,
+                })
+            df_cedula = pd.DataFrame(rows_ced)
+            st.dataframe(
+                df_cedula,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Dorsal":   st.column_config.NumberColumn("Dorsal",   format="%d", width="small"),
+                    "Nombre":   st.column_config.TextColumn("Nombre",              width="medium"),
+                    "Alta":     st.column_config.TextColumn("Alta",                width="small"),
+                    "PJ":       st.column_config.NumberColumn("PJ",       format="%d", width="small"),
+                    "Liguilla": st.column_config.TextColumn("Liguilla",            width="small"),
+                },
+            )
             st.markdown("#### Dar de baja")
             baja_map = {f"#{p.number} — {p.name}": p.id for p in players}
             b_sel = st.selectbox("Jugador", list(
@@ -2384,7 +2680,18 @@ def _section_management() -> None:
             if df_eligs.empty:
                 st.info("No hay registros disponibles.")
             else:
-                st.table(df_eligs.set_index("Jugador"))
+                st.dataframe(
+                    df_eligs,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Jugador":    st.column_config.TextColumn("Jugador",              width="medium"),
+                        "Dorsal":     st.column_config.NumberColumn("Dorsal",  format="%d", width="small"),
+                        "PJ":         st.column_config.NumberColumn("PJ",      format="%d", width="small"),
+                        "Requeridos": st.column_config.NumberColumn("Req.",    format="%d", width="small"),
+                        "Elegible":   st.column_config.TextColumn("Elegible",             width="small"),
+                    },
+                )
             st.caption("Umbral: ≥ (partidos_equipo ÷ 2) + 1")
         else:
             st.info("Sin partidos jugados aún.")
@@ -2406,7 +2713,17 @@ def _section_management() -> None:
             if df_disc.empty:
                 st.info("No hay registros disponibles.")
             else:
-                st.table(df_disc.set_index("Equipo"))
+                st.dataframe(
+                    df_disc,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Equipo":    st.column_config.TextColumn("Equipo",   width="medium"),
+                        "Permisos":  st.column_config.TextColumn("Permisos", width="small"),
+                        "WOs":       st.column_config.NumberColumn("WOs", format="%d", width="small"),
+                        "Estado":    st.column_config.TextColumn("Estado",   width="small"),
+                    },
+                )
 
         st.markdown("---")
         col_p, col_d = st.columns(2)
@@ -2425,11 +2742,9 @@ def _section_management() -> None:
                                 Team.name == perm_n, Team.season_id == s.id
                             ).first()
                             if (t.permissions_used or 0) >= MAX_PERMISSIONS:
-                                st.error(
-                                    f"⛔ Ya agotó {MAX_PERMISSIONS} permisos.")
+                                st.error(f"⛔ Ya agotó {MAX_PERMISSIONS} permisos.")
                             else:
-                                t.permissions_used = (
-                                    t.permissions_used or 0) + 1
+                                t.permissions_used = (t.permissions_used or 0) + 1
                                 db.commit()
                                 _invalidate_data()
                                 st.success("✅ Permiso registrado.")
@@ -2909,7 +3224,18 @@ def _section_season_manager() -> None:
 
     if rows_hist:
         df_hist = pd.DataFrame(rows_hist).drop(columns=["ID"])
-        st.table(df_hist.set_index("Categoría"))
+        st.dataframe(
+            df_hist,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Categoría": st.column_config.TextColumn("Categoría", width="small"),
+                "Temporada": st.column_config.TextColumn("Temporada", width="medium"),
+                "Año":       st.column_config.NumberColumn("Año", format="%d", width="small"),
+                "Estado":    st.column_config.TextColumn("Estado",    width="small"),
+                "Tipo":      st.column_config.TextColumn("Tipo",      width="small"),
+            },
+        )
     else:
         st.info("No hay registros disponibles.")
 
@@ -3015,8 +3341,7 @@ def _section_season_manager() -> None:
                 f"✅ Temporada **{new_name}** ({tipo_str}) creada para **{new_cat}**."
             )
             if old_season_name:
-                st.info(
-                    f"📦 Temporada anterior **'{old_season_name}'** archivada.")
+                st.info(f"📦 Temporada anterior **'{old_season_name}'** archivada.")
             if clone_cedulas and old_season_name:
                 st.success(
                     f"📋 Clonados: **{cloned_teams}** equipos y "
@@ -3066,8 +3391,7 @@ def _section_season_manager() -> None:
                         target.is_active = True
                         db.commit()
                     _invalidate_data()
-                    st.success(
-                        f"✅ **{target_name}** reactivada para {target_cat}.")
+                    st.success(f"✅ **{target_name}** reactivada para {target_cat}.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"🔴 Error al reactivar: `{exc}`")
@@ -3119,23 +3443,38 @@ def page_admin() -> None:
 
     st.markdown("---")
 
+    # Orden del flujo de trabajo: Temporadas → Gestión → Calendario → Captura
+    # El índice 0 (Temporadas) es el punto de entrada natural del admin.
+    st.markdown("""
+<style>
+[data-testid="stDataFrame"] td,
+[data-testid="stDataFrame"] th {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    font-size: 0.85rem !important;
+    background-color: #1A1C24 !important;
+    border-bottom: 1px solid #31333F !important;
+    padding: 3px 6px !important;
+}
+[data-testid="stDataFrame"] { width: 100% !important; }
+</style>
+""", unsafe_allow_html=True)
+
     admin_tabs = st.tabs([
-        "⚡ Captura de Partido",
-        "🛠️ Gestión",
-        "📅 Calendario",
-        "🏆 Temporadas",
-
-
+        "🏆 Temporadas",   # 0 — crear / gestionar torneos
+        "🛠️ Gestión",      # 1 — equipos, cédulas, traspasos
+        "🗓️ Calendario",   # 2 — programar jornadas
+        "⚡ Captura",      # 3 — registrar resultados
     ])
 
-    with admin_tabs[0]:
-        _section_capture()
-    with admin_tabs[1]:
-        _section_management()
-    with admin_tabs[2]:
-        _section_calendar_admin()
-    with admin_tabs[3]:
+    with admin_tabs[0]:   # 🏆 Temporadas
         _section_season_manager()
+    with admin_tabs[1]:   # 🛠️ Gestión
+        _section_management()
+    with admin_tabs[2]:   # 🗓️ Calendario
+        _section_calendar_admin()
+    with admin_tabs[3]:   # ⚡ Captura de Partido
+        _section_capture()
 
 
 # ================================================================
@@ -3154,6 +3493,7 @@ def main() -> None:
 
     # Carga única (solo la primera vez por sesión)
     _ensure_data_loaded()
+
 
     # ── Definición de páginas ─────────────────────────────────────────────
     NAV_OPTIONS = ["Posiciones", "Líderes", "Calendario", "Equipos", "Admin"]
