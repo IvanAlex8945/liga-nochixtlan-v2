@@ -1880,7 +1880,6 @@ def page_teams() -> None:
             gp  = p.get(f"gp_{pk}",  0)
             pts = p.get(f"pts_{pk}", 0)
             trp = p.get(f"trp_{pk}", 0)
-            fls = p.get(f"fls_{pk}", 0)
             ppg_p = round(pts / gp, 1) if gp > 0 else 0.0
             rows.append({
                 "#":       p["number"],
@@ -1895,7 +1894,7 @@ def page_teams() -> None:
             .reset_index(drop=True)
         )
         df_p.insert(0, "Pos", ["🥇" if i == 0 else f"{i+1}°" for i in range(len(df_p))])
-        df_p = df_p.rename(columns={"#": "Dorsal", "FC": "Faltas"})
+        df_p = df_p.rename(columns={"#": "Dorsal"})
         if df_p.empty:
             st.info("No hay registros disponibles.")
         else:
